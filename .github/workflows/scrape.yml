@@ -1,0 +1,33 @@
+name: Coleta diaria de precos do boi
+
+on:
+  schedule:
+    # 22:00 UTC = 19:00 horario de Brasilia, de segunda a sexta (apos o fechamento da B3)
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch:   # permite rodar manualmente pelo botao "Run workflow"
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rodar o scraper
+        run: node scrape.js
+
+      - name: Salvar (commit) o historico
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add boi.json
+          git commit -m "Precos do boi $(date -u +%Y-%m-%d)" || echo "Sem mudancas hoje"
+          git push
