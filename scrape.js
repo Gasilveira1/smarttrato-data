@@ -1,6 +1,6 @@
-// scrape.js — coleta diária de preços do boi gordo (CEPEA à vista, Datagro SP e curva de futuros BGI/B3)
+// scrape.js — coleta diária de preços do boi gordo (Indicador Datagro SP + curva de futuros BGI/B3)
 // Roda no GitHub Actions (Node 20+). Usa o Jina Reader (r.jina.ai) para ler as páginas sem servidor próprio.
-// Salva/atualiza o histórico em boi.json (um registro por dia, fuso de São Paulo).
+// Salva/atualiza o histórico em boi.json (um registro por dia, datado pelo "Fechamento" da página da B3).
 
 const fs = require('fs');
 
@@ -9,15 +9,6 @@ const MONTH_PT = { janeiro:1, fevereiro:2, 'março':3, marco:3, abril:4, maio:5,
                    julho:7, agosto:8, setembro:9, outubro:10, novembro:11, dezembro:12 };
 
 const brNum = s => parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
-
-// CEPEA/ESALQ à vista: marcador "à vista R$" + primeiro preço nos próximos ~400 chars
-function parseCepea(txt) {
-  const t = txt.replace(/\s+/g, ' ');
-  const i = t.search(/à\s*vista\s*R\$/i);
-  if (i < 0) return null;
-  const m = t.slice(i, i + 400).match(/(\d{1,3}(?:\.\d{3})*,\d{2})/);
-  return m ? brNum(m[1]) : null;
-}
 
 // Datagro: linha da praça São Paulo do fechamento mais recente (1ª ocorrência = topo), 1º preço R$/@
 function parseDatagro(txt) {
@@ -33,7 +24,7 @@ function parseDatagro(txt) {
   return null;
 }
 
-// Curva de futuros BGI (B3): linhas "Mês/AnoCompleto | preço" — o ano de 4 dígitos filtra a B3 e ignora o CBOT (2 dígitos)
+// Curva de futuros BGI (B3): linhas "Mês/AnoCompleto | preço" — o ano de 4 dígitos filtra a B3 (ignora tabelas com ano de 2 dígitos)
 function parseBGI(txt) {
   const t = txt.replace(/\s+/g, ' ');
   const out = {};
@@ -49,29 +40,38 @@ function parseBGI(txt) {
   return out;
 }
 
+// Data do fechamento exibido na página: "Fechamento: DD/MM/AAAA" -> "AAAA-MM-DD"
+function parseFechamento(txt) {
+  const m = txt.match(/Fechamento:?\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : null;
+}
+
 async function jina(url) {
   const r = await fetch('https://r.jina.ai/' + url, { headers: { 'Accept': 'text/plain' } });
   if (!r.ok) throw new Error('HTTP ' + r.status + ' em ' + url);
   return await r.text();
 }
 
-(async () => {
-  const t1 = await jina('https://www.noticiasagricolas.com.br/cotacoes/boi-gordo');
-  let t2 = '';
-  try { t2 = await jina('https://www.noticiasagricolas.com.br/cotacoes/boi-gordo/indicador-do-boi'); } catch (e) {}
+const URL_FUT = 'https://www.noticiasagricolas.com.br/cotacoes/boi-gordo/boi-gordo-b3-prego-regular';
+const URL_DAT = 'https://www.noticiasagricolas.com.br/cotacoes/boi-gordo/indicador-do-boi';
 
-  const cepea = parseCepea(t1);
+(async () => {
+  const t1 = await jina(URL_FUT);
+  let t2 = '';
+  try { t2 = await jina(URL_DAT); } catch (e) {}
+
   const fut = parseBGI(t1);
   const datagro = parseDatagro(t2) || parseDatagro(t1);
+  const fech = parseFechamento(t1) || parseFechamento(t2);
 
-  if (Object.keys(fut).length === 0 && !cepea && !datagro) {
+  if (Object.keys(fut).length === 0 && !datagro) {
     console.error('Nada capturado — a fonte pode ter mudado de formato. Abortando sem alterar o histórico.');
     process.exit(1);
   }
 
-  // data de hoje no fuso de São Paulo (YYYY-MM-DD)
-  const d = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
-  const snap = { d, datagro: datagro || 0, cepea: cepea || 0, fut };
+  // usa a data do "Fechamento" da página; se faltar, usa a data de hoje (fuso de São Paulo)
+  const d = fech || new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+  const snap = { d, datagro: datagro || 0, fut };
 
   const file = 'boi.json';
   let hist = [];
@@ -82,6 +82,5 @@ async function jina(url) {
   hist.sort((a, b) => (a.d < b.d ? -1 : 1));
 
   fs.writeFileSync(file, JSON.stringify(hist, null, 1));
-  console.log('OK', d, '| Datagro', snap.datagro, '| CEPEA', snap.cepea, '| contratos', Object.keys(fut).length);
+  console.log('OK', d, '| Datagro', snap.datagro, '| contratos', Object.keys(fut).length);
 })().catch(e => { console.error(e); process.exit(1); });
-
